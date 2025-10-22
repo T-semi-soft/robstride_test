@@ -113,8 +113,90 @@ def get_bus_interface(channel: str) -> str:
     return 'socketcan'
 
 def main():
-    print("Hello from robstride-test!")
+    global last_found_id
+    
+    if len(sys.argv) != 2:
+        print(f"使い方: python {sys.argv[0]} <can_interface>")
+        print(f"例 (SocketCAN): python {sys.argv[0]} can0")
+        print(f"例 (SLCAN):     python {sys.argv[0]} /dev/ttyACM0")
+        sys.exit(1)
+        
+    channel_name = sys.argv[1]
+    # 'can0' なら 'socketcan', '/dev/ttyACM0' なら 'slcan' などを推測
+    interface_type = get_bus_interface(channel_name)
 
+    print("\nRS05 IDツール (python-can版)")
+    print("G=スキャン / S <hex>=ID変更 / Q=終了")
+
+    bus: Optional[can.Bus] = None
+    try:
+        bus = can.Bus(
+            interface=interface_type, 
+            channel=channel_name, 
+            bitrate=1000000
+        )
+        print(f"CAN start OK ({interface_type} @ {channel_name} @1Mbps)")
+    except Exception as e:
+        print(f"CANバス '{channel_name}' ({interface_type}) の初期化に失敗しました: {e}")
+        if interface_type == 'socketcan':
+            print(f"sudo ip link set {channel_name} type can bitrate 1000000 up")
+            print("↑ を実行しましたか？")
+        sys.exit(1)
+
+    # 起動時に一発スキャン
+    scan_ids(bus)
+
+    # loop()
+    try:
+        while True:
+            cmd_line = input("> ").strip()
+            if not cmd_line:
+                continue
+                
+            cmd_parts = cmd_line.split()
+            cmd_char = cmd_parts[0].upper()
+
+            if cmd_char == 'G':
+                scan_ids(bus)
+                
+            elif cmd_char == 'S':
+                if len(cmd_parts) < 2:
+                    print("使い方: S <hex> 例) S 3B")
+                    continue
+                
+                hex_str = cmd_parts[1]
+                try:
+                    new_id = int(hex_str, 16)
+                    if not (0 <= new_id <= 0x7F):
+                        print("ID範囲外。0x00..0x7Fだけや。")
+                        continue
+                        
+                    if last_found_id == 0xFF:
+                        print("現在見えてるIDが無い。先にGでスキャンしろ。")
+                    else:
+                        print(f"SET_ID: 0x{last_found_id:02X} -> 0x{new_id:02X} ...")
+                        if send_set_id(bus, last_found_id, new_id):
+                            time.sleep(0.05)  # delay(50)
+                            # 変更直後にブロードキャスト応答が来る仕様。ついでに再スキャンで確定させる。
+                            scan_ids(bus)
+                        else:
+                            print("送信失敗")
+                            
+                except ValueError:
+                    print(f"16進数として無効です: '{hex_str}'")
+
+            elif cmd_char == 'Q':
+                break
+            
+            else:
+                print("コマンド: G / S <hex> / Q")
+
+    except KeyboardInterrupt:
+        print("\n終了 (Ctrl+C)")
+    finally:
+        if bus:
+            bus.shutdown()
+            print("CANバスをシャットダウンしました。")
 
 if __name__ == "__main__":
     main()
