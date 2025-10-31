@@ -171,27 +171,32 @@ def scan_ids(bus: can.Bus, wait_ms: int = 800):
 
 
 # ---- 角度指令（A） ----
-def csp_move_deg(bus: can.Bus, deg: float) -> bool:
+def csp_move_deg(bus: can.Bus, deg: float, motor_id: Optional[int] = None) -> bool:
     global limit_spd, current_id
+    
+    target_id = current_id if motor_id is None else motor_id
+    if not (0 <= target_id <= 0xFF):
+        print(f"無効なモータIDです: {target_id}")
+        return False
     
     rad = deg * math.pi / 180.0
     ok = True
     
     # 1. CSP(5)モードに設定
-    ok &= write_param_u8(bus, IDX_runmode, 5, current_id)
+    ok &= write_param_u8(bus, IDX_runmode, 5, target_id)
     # 2. 速度上限を適用
-    ok &= write_param_f(bus, IDX_limit_spd, limit_spd, current_id)
+    ok &= write_param_f(bus, IDX_limit_spd, limit_spd, target_id)
     time.sleep(0.005) # delay(5)
     
     # 3. 有効化
-    ok &= send_enable(bus, current_id)
+    ok &= send_enable(bus, target_id)
     time.sleep(0.005) # delay(5)
     
     # 4. 目標角度を書き込み
-    ok &= write_param_f(bus, IDX_loc_ref, rad, current_id)
+    ok &= write_param_f(bus, IDX_loc_ref, rad, target_id)
     
     status = "OK" if ok else "NG"
-    print(f"A: {deg:.3f} deg ({rad:.6f} rad) / limit={limit_spd:.3f} rad/s -> {status}")
+    print(f"A(ID=0x{target_id:02X}): {deg:.3f} deg ({rad:.6f} rad) / limit={limit_spd:.3f} rad/s -> {status}")
     return ok
 
 # ==== インターフェース判別 ====
@@ -214,7 +219,7 @@ def main():
     channel_name = sys.argv[1]
     interface_type = get_bus_interface(channel_name)
 
-    print("\nRS05 角度指令(CSP): G=スキャン / L <rad_s>=上限設定 / A <deg>=角度指令 / Q=終了")
+    print("\nRS05 角度指令(CSP): G=スキャン / L <rad_s>=上限設定 / A <deg> or A <id> <deg>=角度指令 / Q=終了")
 
     bus: Optional[can.Bus] = None
     try:
@@ -266,20 +271,30 @@ def main():
 
             elif cmd_char == 'A':
                 if len(cmd_parts) < 2:
-                    print("使い方: A <deg>")
+                    print("使い方: A <deg> または A <id> <deg>")
                     continue
-                try:
-                    deg = float(cmd_parts[1])
-                    csp_move_deg(bus, deg)
-                except ValueError:
-                    print(f"無効な数値です: '{cmd_parts[1]}'")
+                if len(cmd_parts) == 2:
+                    try:
+                        deg = float(cmd_parts[1])
+                        csp_move_deg(bus, deg)
+                    except ValueError:
+                        print(f"無効な数値です: '{cmd_parts[1]}'")
+                    continue
+                if len(cmd_parts) >= 3:
+                    try:
+                        target_id = int(cmd_parts[1], 0)
+                        deg = float(cmd_parts[2])
+                        csp_move_deg(bus, deg, target_id)
+                    except ValueError:
+                        print(f"無効な数値です: '{' '.join(cmd_parts[1:3])}'")
+                    continue
 
             elif cmd_char == 'Q':
                 print("終了します。")
                 break
             
             else:
-                print("コマンド: G / L <rad_s> / A <deg> / Q")
+                print("コマンド: G / L <rad_s> / A <deg> or A <id> <deg> / Q")
 
     except KeyboardInterrupt:
         print("\n終了 (Ctrl+C)")
